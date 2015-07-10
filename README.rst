@@ -7,7 +7,7 @@ Description
 ***********
 
 *Humpty* is a command-line utility to convert Python binary wheel
- packages to eggs.
+packages to eggs.
 
 Currently, the tool is in a “works for me” state.  (It is not
 guaranteed to work for you.)
