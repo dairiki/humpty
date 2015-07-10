@@ -14,13 +14,13 @@ import posixpath
 import shutil
 import sys
 import tempfile
-from zipfile import ZipFile
+from zipfile import ZipFile, ZIP_DEFLATED
 
 import click
 from distlib.markers import interpret
 from distlib.metadata import LegacyMetadata
 import distlib.scripts
-from distlib.util import get_export_entry, zip_dir, FileOperator
+from distlib.util import get_export_entry, FileOperator
 from distlib.wheel import Wheel
 import pkg_resources
 
@@ -182,29 +182,37 @@ class EggWriter(object):
         wheel.verify()
 
         self.wheel = wheel
-        self.fileops = FileOperator()  # FIXME: dry-run?
+        self.fileops = FileOperator()
+        self.egg_metadata = EggMetadata(wheel)
 
     def build_egg(self, destdir):
         wheel = self.wheel
-        egg_name = self.get_egg_name(wheel)
-        outfile = os.path.join(destdir, egg_name)
-        log.warning("Converting %s to %s", wheel.filename, egg_name)
-        builddir = tempfile.mkdtemp()
-        try:
-            self.unpack_wheel(wheel, builddir)
-            zf = zip_dir(builddir)
-            zf.seek(0)
-            self.fileops.copy_stream(zf, outfile)
-            return outfile
-        finally:
-            shutil.rmtree(builddir)
+        outfile = os.path.join(destdir, self.egg_name)
+        log.warning("Converting %s to %s", wheel.filename, outfile)
 
-    def unpack_wheel(self, wheel, builddir):
+        if not os.path.isdir(destdir):
+            log.info("Creating dist directory %s", destdir)
+            os.makedirs(destdir)
+
+        with fh(ZipFile(outfile, 'w', ZIP_DEFLATED)) as zf:
+            builddir = tempfile.mkdtemp()
+            try:
+                for arcname, filename in self.unpack_wheel(builddir):
+                    zf.write(filename, arcname)
+            finally:
+                shutil.rmtree(builddir)
+
+            for filename, content in self.egg_metadata:
+                arcname = 'EGG-INFO/%s' % filename
+                zf.writestr(arcname, content)
+
+        return outfile
+
+    def unpack_wheel(self, libdir):
         fileops = self.fileops
-        libdir = builddir
+        wheel = self.wheel
         name_version = '%s-%s' % (wheel.name, wheel.version)
         data_dir = os.path.join(libdir, '%s.data' % name_version)
-        distinfo_dir = os.path.join(libdir, '%s.dist-info' % name_version)
         egginfo_dir = os.path.join(libdir, 'EGG-INFO')
         paths = {
             'purelib': libdir,
@@ -215,19 +223,11 @@ class EggWriter(object):
             paths[where] = os.path.join(data_dir, where)
 
         map(fileops.ensure_dir, paths.values())
-
         maker = ScriptCopyer(None, None)
         wheel.install(paths, maker, warner=warner)
 
-        egg_metadata = EggMetadata(wheel)
-        # Create files in EGG-INFO
-        for filename, content in egg_metadata:
-            outfile = os.path.join(egginfo_dir, filename)
-            log.info("Creating %s", outfile)
-            fileops.write_text_file(outfile, content, 'utf-8')
-
         # Create __init__.py for namespace packages
-        namespace_packages = egg_metadata.namespace_packages()
+        namespace_packages = self.egg_metadata.namespace_packages()
         if namespace_packages:
             for package in pkg_resources.yield_lines(namespace_packages):
                 parts = package.split('.')
@@ -237,19 +237,28 @@ class EggWriter(object):
                 fileops.write_text_file(outfile, NAMESPACE_INIT, 'utf-8')
                 fileops.byte_compile(outfile)
 
-        # Remove *-nspkg.pth file
-        pthfiles = [os.path.join(libdir, fn)
-                    for fn in os.listdir(libdir)
-                    if fn.lower().endswith('-nspkg.pth')]
-        if pthfiles:
-            assert len(pthfiles) == 1
-            for pthfile in pthfiles:
-                fileops.ensure_removed(pthfile)
+        subdirs = [()]
+        while subdirs:
+            path = subdirs.pop(0)
+            for fn in os.listdir(os.path.join(libdir, *path)):
+                topdir = len(path) == 0
+                fpath = path + (fn,)
+                filepath = os.path.join(libdir, *fpath)
+                if os.path.isdir(filepath):
+                    if topdir and fn.lower().endswith('.dist-info'):
+                        # Omit .dist-info directory
+                        continue
+                    subdirs.append(fpath)
+                else:
+                    if topdir and fn.endswith('-nspkg.pth'):
+                        # Omit *-nspkg.pth file
+                        continue
+                    arcname = posixpath.join(*fpath)
+                    yield arcname, filepath
 
-        # Remove .dist-info directory
-        fileops.ensure_removed(distinfo_dir)
-
-    def get_egg_name(self, wheel):
+    @property
+    def egg_name(self):
+        wheel = self.wheel
         name = pkg_resources.safe_name(wheel.name)
         version = pkg_resources.safe_version(wheel.version)
         pyver = 'py%d.%d' % sys.version_info[:2]
