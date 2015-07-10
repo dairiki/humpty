@@ -57,37 +57,46 @@ def join_lines(lines):
     return '\n'.join(list(lines) + [''])
 
 
-class EggInfo(object):
+class EggMetadata(object):
+    """ Compute egg metadata.
+
+    An instance of this class is an iterable of ``filename, content``
+    pairs, where each pair represents a metadata file which should be
+    written to the packages ``EGG-INFO`` directory.
+
+    """
     def __init__(self, wheel):
         self.wheel = wheel
         self.metadata = wheel.metadata
 
     def __iter__(self):
-        # FIXME: scripts?
-        # FIXME: copy from distinfo_dir to egginfo_dir
-        # - ?dependency_links.txt
-        # ?All *.txt?
-        # FIXME: Generate native_libs.txt
-        # FIXME: Generate eager_resources.txt?
+        # XXX: dependency_links.txt?
+        # XXX: Copy any other *.txt?
+        # XXX: Zip support: native_libs.txt, eager_resources.txt
 
         yield 'PKG-INFO', self.pkg_info()
-        yield 'requires.txt', self.requires()
-        yield 'top_level.txt', self.top_level()
 
-        entry_points = self.entry_points()
-        if entry_points:
-            yield 'entry_points.txt', entry_points
+        for name in ('requires', 'top_level', 'entry_points',
+                     'namespace_packages'):
+            content = getattr(self, name)()
+            if content is not None:
+                yield "%s.txt" % name, content
 
-        namespace_packages = self.namespace_packages()
-        if namespace_packages:
-            yield 'namespace_packages.txt', namespace_packages
-
-        zip_safe = self.wheel.is_mountable()
-        # FIXME: need command-line override for zip-safe
-        if zip_safe:
+        if self.is_zip_safe:
             yield 'zip-safe', ''
         else:
             yield 'not-zip-safe', ''
+
+    @property
+    def is_zip_safe(self):
+        # FIXME: I'm not at all sure this is correct.
+        # There should probably be a command-line argument to override
+        # the auto detection of zip-safeness.
+
+        # XXX: py3k seems not to be able to load .pyc from zipped eggs
+        if sys.version_info >= (3,):
+            return False
+        return self.wheel.is_mountable()
 
     def pkg_info(self):
         # FIXME: Which Metadata version?
@@ -101,23 +110,23 @@ class EggInfo(object):
     def entry_points(self):
         # FIXME: maybe depend on wheel (or metadata) version to determine
         # which method to use to get data
-        txt = self.read_info('entry_points.txt')
+        txt = self.read_metadata('entry_points.txt')
         if txt is None:
             txt = unsplit_sections(
                 (section, list(map("{0[0]} = {0[1]}".format, entries.items())))
                 for section, entries in self.metadata.exports)
-        return txt
+        return txt if txt else None
 
     def namespace_packages(self):
         # FIXME: maybe depend on wheel (or metadata) version?
-        txt = self.read_info('namespace_packages.txt')
+        txt = self.read_metadata('namespace_packages.txt')
         if txt is None:
             txt = join_lines(self.metadata.namespaces)
-        return txt
+        return txt if txt else None
 
     def top_level(self):
         # FIXME: maybe depend on wheel (or metadata) version?
-        txt = self.read_info('top_level.txt')
+        txt = self.read_metadata('top_level.txt')
         assert txt is not None, "not sure what to do"
         # Maybe extract top-level packages from metadata.modules?
         return txt
@@ -152,14 +161,15 @@ class EggInfo(object):
                                      if req not in unconditional]))
         return unsplit_sections(sections)
 
-    def read_info(self, filename):
+    def read_metadata(self, name):
         wheel = self.wheel
-        pathname = os.path.join(wheel.dirname, wheel.filename)
-        info_dir = "%s-%s.dist-info" % (wheel.name, wheel.version)
-        path = posixpath.join(info_dir, filename)
-        with fh(ZipFile(pathname, 'r')) as zf:
+        wheel_file = os.path.join(wheel.dirname, wheel.filename)
+        metadata_path = posixpath.join(
+            "%s-%s.dist-info" % (wheel.name, wheel.version),
+            name)
+        with fh(ZipFile(wheel_file, 'r')) as zf:
             try:
-                with fh(zf.open(path)) as fp:
+                with fh(zf.open(metadata_path)) as fp:
                     return fp.read().decode('utf-8')
             except KeyError:
                 return None
@@ -209,22 +219,23 @@ class EggWriter(object):
         maker = ScriptCopyer(None, None)
         wheel.install(paths, maker, warner=warner)
 
+        egg_metadata = EggMetadata(wheel)
         # Create files in EGG-INFO
-        egg_info = EggInfo(wheel)
-        for filename, content in egg_info:
+        for filename, content in egg_metadata:
             outfile = os.path.join(egginfo_dir, filename)
             log.info("Creating %s", outfile)
             fileops.write_text_file(outfile, content, 'utf-8')
 
         # Create __init__.py for namespace packages
-        for package in pkg_resources.yield_lines(
-                egg_info.namespace_packages()):
-            parts = package.split('.')
-            outfile = os.path.join(os.path.join(libdir, *parts),
-                                   '__init__.py')
-            log.info("Creating %s", outfile)
-            fileops.write_text_file(outfile, NAMESPACE_INIT, 'utf-8')
-            fileops.byte_compile(outfile)
+        namespace_packages = egg_metadata.namespace_packages()
+        if namespace_packages:
+            for package in pkg_resources.yield_lines(namespace_packages):
+                parts = package.split('.')
+                outfile = os.path.join(os.path.join(libdir, *parts),
+                                       '__init__.py')
+                log.info("Creating %s", outfile)
+                fileops.write_text_file(outfile, NAMESPACE_INIT, 'utf-8')
+                fileops.byte_compile(outfile)
 
         # Remove *-nspkg.pth file
         pthfiles = [os.path.join(libdir, fn)
@@ -279,8 +290,8 @@ class ScriptCopyer(distlib.scripts.ScriptMaker):
     nargs=-1, required=True)
 def main(egg_dir, wheels):
     """ Convert wheels to eggs.
-
     """
+
     logging.basicConfig(level=logging.WARNING, format="%(message)s")
 
     for wheel in wheels:

@@ -20,6 +20,8 @@ requires = [
 tests_require = [
     'pytest',
     'pytest-capturelog',
+    'pkginfo',
+    'virtualenv',
     ]
 
 

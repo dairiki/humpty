@@ -1,1 +1,10 @@
 *~
+*.pyc
+__pycache__/
+
+/.tox/
+/humpty.egg-info/
+/.coverage
+/htmlcov/
+
+
