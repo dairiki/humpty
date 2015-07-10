@@ -6,8 +6,9 @@ Humpty - Convert Python wheels to eggs
 Description
 ***********
 
-*Humpty* is a command-line utility to convert Python binary wheel
-packages to eggs.
+Humpty is a command-line utility to convert Python binary wheel
+packages to eggs.  If you have a ``.whl`` and you need an ``.egg``,
+humpty is for you.
 
 Currently, the tool is in a “works for me” state.  (It is not
 guaranteed to work for you.)
@@ -15,6 +16,35 @@ guaranteed to work for you.)
 Development takes place on github_.
 
 .. _github: https://github.com/dairiki/humpty/
+
+********
+Synopsis
+********
+
+The humpty "man page"::
+
+  $ humpty --help
+  Usage: humpty [OPTIONS] WHEELS...
+
+    Convert wheels to eggs.
+
+  Options:
+    -d, --dist-dir DIR  Build eggs into <dir>.  Default is <cwd>/dist.
+    --help              Show this message and exit.
+
+Suppose you need an egg of a distribution which has only been uploaded
+to PyPI as a wheel::
+
+  $ pip install --download . publicsuffixlist
+  [...]
+    Saved ./publicsuffixlist-0.2.8-py2.py3-none-any.whl
+  Successfully downloaded publicsuffixlist
+
+  $ humpty -dist-dir . publicsuffixlist-0.2.8-py2.py3-none-any.whl
+  Converting publicsuffixlist-0.2.8-py2.py3-none-any.whl to publicsuffixlist-0.2.8-py2.6.egg
+
+  $ easy_install publicsuffixlist-0.2.8-py2.7.egg
+
 
 **********
 References
