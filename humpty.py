@@ -281,21 +281,21 @@ class ScriptCopyer(distlib.scripts.ScriptMaker):
 
 @click.command()
 @click.option(
-    '-d', '--egg-dir', default='dist',
+    '-d', '--dist-dir', default='dist',
     type=click.Path(writable=True, file_okay=False),
     help="Build eggs into <dir>.  Default is <cwd>/dist.",
     metavar='DIR')
 @click.argument(
     'wheels', type=click.Path(exists=True, dir_okay=False),
     nargs=-1, required=True)
-def main(egg_dir, wheels):
+def main(dist_dir, wheels):
     """ Convert wheels to eggs.
     """
 
     logging.basicConfig(level=logging.WARNING, format="%(message)s")
 
     for wheel in wheels:
-        EggWriter(wheel).build_egg(egg_dir)
+        EggWriter(wheel).build_egg(dist_dir)
 
 
 if __name__ == '__main__':
