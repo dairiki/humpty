@@ -15,34 +15,18 @@ import py_compile
 import shutil
 import sys
 import tempfile
+from textwrap import dedent
 from zipfile import ZipFile, ZIP_DEFLATED
 
 import click
 from distlib.markers import interpret
 from distlib.metadata import LegacyMetadata
 import distlib.scripts
-from distlib.util import get_export_entry, FileOperator
+from distlib.util import get_export_entry
 from distlib.wheel import Wheel
 import pkg_resources
 
 log = logging.getLogger(__name__)
-
-NAMESPACE_INIT = """
-try:
-    __import__('pkg_resources').declare_namespace(__name__)
-except ImportError:
-    __path__ = __import__('pkgutil').extend_path(__path__, __name__)
-""".lstrip()
-
-EXT_STUB_LOADER_TEMPLATE = """
-def __bootstrap__():
-    global __bootstrap__, __loader__, __file__
-    import sys, pkg_resources, imp
-    __file__ = pkg_resources.resource_filename(__name__, {name!r})
-    __loader__ = None; del __bootstrap__, __loader__
-    imp.load_dynamic(__name__,__file__)
-__bootstrap__()
-""".lstrip()
 
 
 @contextmanager
@@ -51,15 +35,6 @@ def fh(fp):
         yield fp
     finally:
         fp.close()
-
-
-@contextmanager
-def temporary_directory():
-    dir = tempfile.mkdtemp()
-    try:
-        yield dir
-    finally:
-        shutil.rmtree(dir)
 
 
 def unsplit_sections(sections):
@@ -202,35 +177,6 @@ class EggMetadata(object):
         txt = unsplit_sections(sections)
         return txt
 
-    def stub_loaders(self):
-        stubs = self.namespace_stubs()
-        if self.is_zip_safe:
-            stubs = chain(stubs, self.extension_stub_loaders())
-        return stubs
-
-    def namespace_stubs(self):
-        """ Create __init__.py for namespace packages
-        """
-        for package in pkg_resources.yield_lines(self.namespace_packages()):
-            parts = package.split('.') + ['__init__.py']
-            arcname = posixpath.join(*parts)
-            content = NAMESPACE_INIT.encode('utf-8')
-            yield arcname, content
-
-    def extension_stub_loaders(self):
-        """ Stub loaders for extension modules.
-
-        Only needed (I think) if zip_safe is set.
-
-        """
-        for extmod in pkg_resources.yield_lines(self.native_libs()):
-            _, name = posixpath.split(extmod)
-            base, ext = posixpath.splitext(extmod)
-            stubname = base + '.py'
-            stub_loader = EXT_STUB_LOADER_TEMPLATE.format(name=name)
-            content = stub_loader.encode('utf-8')
-            yield stubname, content
-
     def read_metadata(self, name):
         metadata_path = posixpath.join(
             "%s-%s.dist-info" % (self.wheel.name, self.wheel.version),
@@ -253,6 +199,82 @@ class EggMetadata(object):
             zf.close()
 
 
+class StubLoaders(object):
+    """ Generate stub loaders.
+
+    Generate stub loaders for namespace packages and extension modules.
+
+    An instance of this class is an iterable of ``filename, content``
+    pairs, where each pair represents a stub-loader file which should be
+    written to the packages egg.
+
+    """
+    NAMESPACE_STUB = dedent("""
+        try:
+            __import__('pkg_resources').declare_namespace(__name__)
+        except ImportError:
+            __path__ = __import__('pkgutil').extend_path(__path__, __name__)
+        """).lstrip()
+
+    EXT_STUB_TEMPLATE = dedent("""
+        def __bootstrap__():
+            global __bootstrap__, __loader__, __file__
+            import sys, pkg_resources, imp
+            __file__ = pkg_resources.resource_filename(__name__, {extname!r})
+            __loader__ = None; del __bootstrap__, __loader__
+            imp.load_dynamic(__name__,__file__)
+        __bootstrap__()
+        """).lstrip()
+
+    def __init__(self, egg_metadata, egg_name=''):
+        self.egg_metadata = egg_metadata
+        self.egg_name = egg_name
+
+    def __iter__(self):
+        stubs = self.namespace_stubs()
+        if self.egg_metadata.is_zip_safe:
+            stubs = chain(stubs, self.extension_stub_loaders())
+        for arcname, content in stubs:
+            yield arcname, content
+            yield self.byte_compile(arcname, content)
+
+    def namespace_stubs(self):
+        """ Create __init__.py for namespace packages
+        """
+        content = self.NAMESPACE_STUB.encode('utf-8')
+        namespace_packages = self.egg_metadata.namespace_packages()
+        for package in pkg_resources.yield_lines(namespace_packages):
+            parts = package.split('.') + ['__init__.py']
+            arcname = posixpath.join(*parts)
+            yield arcname, content
+
+    def extension_stub_loaders(self):
+        """ Stub loaders for extension modules.
+
+        Only needed (I think) if zip_safe is set.
+
+        """
+        native_libs = self.egg_metadata.native_libs()
+        for extmod in pkg_resources.yield_lines(native_libs):
+            head, extname = posixpath.split(extmod)
+            root, ext = posixpath.splitext(extmod)
+            stubname = root + '.py'
+            stub_loader = self.EXT_STUB_TEMPLATE.format(extname=extname)
+            content = stub_loader.encode('utf-8')
+            yield stubname, content
+
+    def byte_compile(self, arcname, content):
+        root, ext = posixpath.splitext(arcname)
+        arcname_pyc = root + '.pyc'
+        diagnostic_name = posixpath.join(self.egg_name, arcname)
+        with tempfile.NamedTemporaryFile() as dst:
+            with tempfile.NamedTemporaryFile() as src:
+                src.write(content)
+                src.flush()
+                py_compile.compile(src.name, dst.name, diagnostic_name, True)
+            return arcname_pyc, dst.read()
+
+
 class EggWriter(object):
     def __init__(self, wheel_file):
         wheel = Wheel(wheel_file)
@@ -260,12 +282,11 @@ class EggWriter(object):
         wheel.verify()
 
         self.wheel = wheel
-        self.fileops = FileOperator()
-        self.egg_metadata = EggMetadata(wheel)
 
     def build_egg(self, destdir):
         wheel = self.wheel
         outfile = os.path.join(destdir, self.egg_name)
+        egg_metadata = EggMetadata(wheel)
         log.warning("Converting %s to %s", wheel.filename, outfile)
 
         if not os.path.isdir(destdir):
@@ -273,22 +294,24 @@ class EggWriter(object):
             os.makedirs(destdir)
 
         with fh(ZipFile(outfile, 'w', ZIP_DEFLATED)) as zf:
-            with temporary_directory() as builddir:
+            builddir = tempfile.mkdtemp()
+            try:
                 for arcname, filename in self.unpack_wheel(builddir):
                     zf.write(filename, arcname)
+            finally:
+                shutil.rmtree(builddir)
 
-            for filename, content in self.egg_metadata:
-                arcname = 'EGG-INFO/%s' % filename
+            stub_loaders = StubLoaders(egg_metadata, self.egg_name)
+            for arcname, content in stub_loaders:
                 zf.writestr(arcname, content)
 
-            for arcname, content in self.byte_compile(
-                    self.egg_metadata.stub_loaders()):
+            for filename, content in egg_metadata:
+                arcname = 'EGG-INFO/%s' % filename
                 zf.writestr(arcname, content)
 
         return outfile
 
     def unpack_wheel(self, libdir):
-        fileops = self.fileops
         wheel = self.wheel
         name_version = '%s-%s' % (wheel.name, wheel.version)
         data_dir = os.path.join(libdir, '%s.data' % name_version)
@@ -301,8 +324,10 @@ class EggWriter(object):
         for where in 'prefix', 'headers', 'data':
             paths[where] = os.path.join(data_dir, where)
 
-        for d in paths.values():
-            fileops.ensure_dir(d)
+        for path in paths.values():
+            if not os.path.isdir(path):
+                log.debug("Creating directory %s", path)
+                os.makedirs(path)
 
         maker = ScriptCopyer(None, None)
         wheel.install(paths, maker, warner=warner)
@@ -341,25 +366,6 @@ class EggWriter(object):
             bits.append(pkg_resources.get_build_platform())
         return '-'.join(bits) + '.egg'
 
-    def byte_compile_file(self, arcname, content):
-        base, ext = posixpath.splitext(arcname)
-        arcname_pyc = base + '.pyc'
-        with temporary_directory() as tmpdir:
-            src_py = os.path.join(tmpdir, 'src.py')
-            src_pyc = os.path.join(tmpdir, 'src.pyc')
-            with open(src_py, 'wb') as fp:
-                fp.write(content)
-            diagnostic_name = posixpath.join(self.egg_name, arcname)
-            py_compile.compile(src_py, src_pyc, diagnostic_name, True)
-            with open(src_pyc, 'rb') as fp:
-                return arcname_pyc, fp.read()
-
-    def byte_compile(self, files):
-        for arcname, content in files:
-            yield arcname, content
-            yield self.byte_compile_file(arcname, content)
-
-
 
 def warner(software_wheel_version, file_wheel_version):
     log.info("Wheel version mismatch: software=%r, file=%r",
@@ -379,13 +385,18 @@ class ScriptCopyer(distlib.scripts.ScriptMaker):
 
 @click.command()
 @click.option(
-    '-d', '--dist-dir', default='dist',
+    '-d', '--dist-dir',
     type=click.Path(writable=True, file_okay=False),
+    default='dist',
     help="Build eggs into <dir>.  Default is <cwd>/dist.",
-    metavar='DIR')
+    metavar='DIR',
+    )
 @click.argument(
-    'wheels', type=click.Path(exists=True, dir_okay=False),
-    nargs=-1, required=True)
+    'wheels',
+    nargs=-1,
+    required=True,
+    type=click.Path(exists=True, dir_okay=False),
+    )
 def main(dist_dir, wheels):
     """ Convert wheels to eggs.
     """
