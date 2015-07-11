@@ -84,6 +84,18 @@ def test_eager_resources(packages):
     assert venv.run("__import__('extension_dist').test_eager_resources()") == 0
 
 
+def test_extras(packages):
+    packages.require_eggs('dist1', 'extension_dist')
+    venv = packages.get_venv('dist1[extras]')
+    assert venv.run("__import__('dist1').test_extras()") == 0
+
+
+def test_no_extras(packages):
+    packages.require_eggs('dist1', 'extension_dist')
+    venv = packages.get_venv('dist1')
+    assert venv.run("__import__('dist1').test_no_extras()") == 0
+
+
 class PackageManager(object):
     def __init__(self, tmpdir):
         self.tmpdir = tmpdir

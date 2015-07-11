@@ -21,4 +21,7 @@ setup(
             'dist1_wrapper = dist1:main',
             ],
         },
+    extras_require={
+        'extras': ['extension_dist'],
+        },
     )
