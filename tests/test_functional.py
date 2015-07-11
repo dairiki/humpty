@@ -24,6 +24,7 @@ def build_wheel(dist_name, wheelhouse, tmpdir):
                      '--build-base', str(ourtmp.join('build')),
                      '--build-temp', str(ourtmp.join('btmp'))])
 
+    print("==== Building wheel for %s ====" % dist_name)
     with srcdir.as_cwd():
         check_call(setup_py + ['bdist_wheel', '--dist-dir', str(wheelhouse)])
 
@@ -35,6 +36,7 @@ def build_wheel(dist_name, wheelhouse, tmpdir):
 
 def build_egg(wheel, egg_dir):
     from humpty import EggWriter
+    print("==== Building egg from %s ====" % wheel)
     return EggWriter(str(wheel)).build_egg(str(egg_dir))
 
 
@@ -70,6 +72,11 @@ def dist2_whl(wheelhouse, session_tmpdir):
 
 
 @pytest.fixture(scope='session')
+def extension_dist_whl(wheelhouse, session_tmpdir):
+    return build_wheel('extension_dist', wheelhouse, session_tmpdir)
+
+
+@pytest.fixture(scope='session')
 def dist1_egg(dist1_whl, distdir):
     return build_egg(dist1_whl, distdir)
 
@@ -77,6 +84,11 @@ def dist1_egg(dist1_whl, distdir):
 @pytest.fixture(scope='session')
 def dist2_egg(dist2_whl, distdir):
     return build_egg(dist2_whl, distdir)
+
+
+@pytest.fixture(scope='session')
+def extension_dist_egg(extension_dist_whl, distdir):
+    return build_egg(extension_dist_whl, distdir)
 
 
 @pytest.fixture
@@ -107,7 +119,7 @@ def dist1_venv(distdir, dist1_egg, session_tmpdir):
 @pytest.fixture(scope='session')
 def dist2_venv(distdir, dist1_egg, dist2_egg, session_tmpdir):
     venv_dir = session_tmpdir.join('dist2_venv')
-    venv = Virtualenv(str(venv_dir))
+    venv = Virtualenv(venv_dir)
     venv.check_call([
         'easy_install',
         '--find-links', ' '.join([dist1_egg, dist2_egg]),
@@ -117,10 +129,18 @@ def dist2_venv(distdir, dist1_egg, dist2_egg, session_tmpdir):
 
 
 class Virtualenv(object):
-    def __init__(self, path):
+    def __init__(self, path, find_links=None, install=None):
         self.path = py.path.local(path)
         self.environ = {'PATH': str(self.path.join('bin'))}
-        check_call(['virtualenv', '--no-site', path])
+        print("==== Creating virtualenv at %s ====" % path)
+        check_call([sys.executable, '-m', 'virtualenv', '--no-site', str(path)])
+
+        if install:
+            cmd = ['easy_install', '--index-url', 'file:///dev/null']
+            if find_links:
+                cmd.extend(['--find-links', str(find_links)])
+            cmd.extend(install)
+            self.check_call(cmd)
 
     def call(self, cmd, **kwargs):
         kwargs['env'] = self.environ
@@ -169,3 +189,17 @@ def test_namespace_package(dist2_venv):
         'sys.exit(the_answer)\n'
         )
     assert dist2_venv.run(prog) == 42
+
+
+@pytest.fixture(scope='module')
+def ext_venv(extension_dist_egg, distdir, session_tmpdir):
+    tmpdir = session_tmpdir.join('ext_venv')
+    return Virtualenv(tmpdir, distdir, install=['extension_dist'])
+
+
+def test_extension(ext_venv):
+    assert ext_venv.call(['get_answer_from_ext']) == 42
+
+
+def test_eager_resources(ext_venv):
+    assert ext_venv.call(['read_answer_from_data']) == 42

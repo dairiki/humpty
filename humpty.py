@@ -11,6 +11,7 @@ from itertools import chain
 import logging
 import os
 import posixpath
+import py_compile
 import shutil
 import sys
 import tempfile
@@ -33,6 +34,16 @@ except ImportError:
     __path__ = __import__('pkgutil').extend_path(__path__, __name__)
 """.lstrip()
 
+EXT_STUB_LOADER_TEMPLATE = """
+def __bootstrap__():
+    global __bootstrap__, __loader__, __file__
+    import sys, pkg_resources, imp
+    __file__ = pkg_resources.resource_filename(__name__, '{name}')
+    __loader__ = None; del __bootstrap__, __loader__
+    imp.load_dynamic(__name__,__file__)
+__bootstrap__()
+""".lstrip()
+
 
 @contextmanager
 def fh(fp):
@@ -40,6 +51,15 @@ def fh(fp):
         yield fp
     finally:
         fp.close()
+
+
+@contextmanager
+def temporary_directory():
+    dir = tempfile.mkdtemp()
+    try:
+        yield dir
+    finally:
+        shutil.rmtree(dir)
 
 
 def unsplit_sections(sections):
@@ -72,14 +92,13 @@ class EggMetadata(object):
     def __iter__(self):
         # XXX: dependency_links.txt?
         # XXX: Copy any other *.txt?
-        # XXX: Zip support: native_libs.txt, eager_resources.txt
 
         yield 'PKG-INFO', self.pkg_info()
 
         for name in ('requires', 'top_level', 'entry_points',
-                     'namespace_packages'):
+                     'namespace_packages', 'native_libs', 'eager_resources'):
             content = getattr(self, name)()
-            if content is not None:
+            if content:
                 yield "%s.txt" % name, content
 
         if self.is_zip_safe:
@@ -115,20 +134,41 @@ class EggMetadata(object):
             txt = unsplit_sections(
                 (section, list(map("{0[0]} = {0[1]}".format, entries.items())))
                 for section, entries in self.metadata.exports)
-        return txt if txt else None
+        return txt
 
     def namespace_packages(self):
         # FIXME: maybe depend on wheel (or metadata) version?
         txt = self.read_metadata('namespace_packages.txt')
         if txt is None:
             txt = join_lines(self.metadata.namespaces)
-        return txt if txt else None
+        return txt
 
     def top_level(self):
         # FIXME: maybe depend on wheel (or metadata) version?
         txt = self.read_metadata('top_level.txt')
         assert txt is not None, "not sure what to do"
         # Maybe extract top-level packages from metadata.modules?
+        return txt
+
+    def native_libs(self):
+        # FIXME: maybe depend on wheel (or metadata) version?
+        txt = self.read_metadata('native_libs.txt')
+        if txt is None:
+            native_libs = []
+            with self.open_wheel() as zf:
+                for arcname in zf.namelist():
+                    base, ext = posixpath.splitext(arcname)
+                    if ext.lower() in ('.so', '.dll', '.dylib'):
+                        native_libs.append(arcname)
+            txt = join_lines(native_libs)
+        return txt
+
+    def eager_resources(self):
+        # FIXME: maybe depend on wheel (or metadata) version?
+        txt = self.read_metadata('eager_resources.txt')
+        if txt is None:
+            # FIXME: not sure what to do.
+            pass
         return txt
 
     def requires(self):
@@ -159,20 +199,58 @@ class EggMetadata(object):
         for extra in self.metadata.extras:
             sections.append((extra, [req for req in reqs(extra)
                                      if req not in unconditional]))
-        return unsplit_sections(sections)
+        txt = unsplit_sections(sections)
+        return txt
+
+    def stub_loaders(self):
+        stubs = self.namespace_stubs()
+        if self.is_zip_safe:
+            stubs = chain(stubs, self.extension_stub_loaders())
+        return stubs
+
+    def namespace_stubs(self):
+        """ Create __init__.py for namespace packages
+        """
+        for package in pkg_resources.yield_lines(self.namespace_packages()):
+            parts = package.split('.') + ['__init__.py']
+            arcname = posixpath.join(*parts)
+            content = NAMESPACE_INIT.encode('utf-8')
+            yield arcname, content
+
+    def extension_stub_loaders(self):
+        """ Stub loaders for extension modules.
+
+        Only needed (I think) if zip_safe is set.
+
+        """
+        for extmod in pkg_resources.yield_lines(self.native_libs()):
+            _, name = posixpath.split(extmod)
+            base, ext = posixpath.splitext(extmod)
+            stubname = base + '.py'
+            stub_loader = EXT_STUB_LOADER_TEMPLATE.format(name=name)
+            content = stub_loader.encode('utf-8')
+            yield stubname, content
 
     def read_metadata(self, name):
-        wheel = self.wheel
-        wheel_file = os.path.join(wheel.dirname, wheel.filename)
         metadata_path = posixpath.join(
-            "%s-%s.dist-info" % (wheel.name, wheel.version),
+            "%s-%s.dist-info" % (self.wheel.name, self.wheel.version),
             name)
-        with fh(ZipFile(wheel_file, 'r')) as zf:
+        with self.open_wheel() as zf:
             try:
                 with fh(zf.open(metadata_path)) as fp:
                     return fp.read().decode('utf-8')
             except KeyError:
                 return None
+
+    @contextmanager
+    def open_wheel(self):
+        wheel = self.wheel
+        wheel_file = os.path.join(wheel.dirname, wheel.filename)
+        zf = ZipFile(wheel_file, 'r')
+        try:
+            yield zf
+        finally:
+            zf.close()
 
 
 class EggWriter(object):
@@ -195,15 +273,16 @@ class EggWriter(object):
             os.makedirs(destdir)
 
         with fh(ZipFile(outfile, 'w', ZIP_DEFLATED)) as zf:
-            builddir = tempfile.mkdtemp()
-            try:
+            with temporary_directory() as builddir:
                 for arcname, filename in self.unpack_wheel(builddir):
                     zf.write(filename, arcname)
-            finally:
-                shutil.rmtree(builddir)
 
             for filename, content in self.egg_metadata:
                 arcname = 'EGG-INFO/%s' % filename
+                zf.writestr(arcname, content)
+
+            for arcname, content in self.byte_compile(
+                    self.egg_metadata.stub_loaders()):
                 zf.writestr(arcname, content)
 
         return outfile
@@ -222,20 +301,11 @@ class EggWriter(object):
         for where in 'prefix', 'headers', 'data':
             paths[where] = os.path.join(data_dir, where)
 
-        map(fileops.ensure_dir, paths.values())
+        for d in paths.values():
+            fileops.ensure_dir(d)
+
         maker = ScriptCopyer(None, None)
         wheel.install(paths, maker, warner=warner)
-
-        # Create __init__.py for namespace packages
-        namespace_packages = self.egg_metadata.namespace_packages()
-        if namespace_packages:
-            for package in pkg_resources.yield_lines(namespace_packages):
-                parts = package.split('.')
-                outfile = os.path.join(os.path.join(libdir, *parts),
-                                       '__init__.py')
-                log.info("Creating %s", outfile)
-                fileops.write_text_file(outfile, NAMESPACE_INIT, 'utf-8')
-                fileops.byte_compile(outfile)
 
         subdirs = [()]
         while subdirs:
@@ -270,6 +340,25 @@ class EggWriter(object):
             # not pure python
             bits.append(pkg_resources.get_build_platform())
         return '-'.join(bits) + '.egg'
+
+    def byte_compile_file(self, arcname, content):
+        base, ext = posixpath.splitext(arcname)
+        arcname_pyc = base + '.pyc'
+        with temporary_directory() as tmpdir:
+            src_py = os.path.join(tmpdir, 'src.py')
+            src_pyc = os.path.join(tmpdir, 'src.pyc')
+            with open(src_py, 'wb') as fp:
+                fp.write(content)
+            diagnostic_name = posixpath.join(self.egg_name, arcname)
+            py_compile.compile(src_py, src_pyc, diagnostic_name, True)
+            with open(src_pyc, 'rb') as fp:
+                return arcname_pyc, fp.read()
+
+    def byte_compile(self, files):
+        for arcname, content in files:
+            yield arcname, content
+            yield self.byte_compile_file(arcname, content)
+
 
 
 def warner(software_wheel_version, file_wheel_version):
@@ -308,4 +397,4 @@ def main(dist_dir, wheels):
 
 
 if __name__ == '__main__':
-    main()
+    main()                      # pragma: NO COVER
