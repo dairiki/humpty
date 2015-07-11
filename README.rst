@@ -2,13 +2,14 @@
 Humpty - Convert Python wheels to eggs
 ======================================
 
+For when you have a ``.whl`` but need an ``.egg``.
+
 ***********
 Description
 ***********
 
 Humpty is a command-line utility to convert Python binary wheel
-packages to eggs.  If you have a ``.whl`` and you need an ``.egg``,
-humpty is for you.
+packages to eggs.
 
 Currently, the tool is in a “works for me” state.  (It is not
 guaranteed to work for you.)
@@ -52,6 +53,7 @@ References
 
 - :PEP:`427` - The Wheel Binary Package Format 1.0
 - :PEP:`491` - The Wheel Binary Package Format 1.9
+- :PEP:`241` - Metadata for Python Software Packages
 - :PEP:`314` - Metadata for Python Software Packages v1.1
 - :PEP:`345` - Metadata for Python Software Packages 1.2
 - :PEP:`426` - Metadata for Python Software Packages 2.0
