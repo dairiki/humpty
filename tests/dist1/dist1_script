@@ -1,0 +1,5 @@
+#!/usr/bin/python
+
+import dist1
+
+dist1.main()

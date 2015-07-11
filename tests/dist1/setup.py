@@ -14,11 +14,11 @@ setup(
     py_modules=['dist1'],
     install_requires=[],
     scripts=[
-        'old_style_script',
+        'dist1_script',
         ],
     entry_points={
         'console_scripts': [
-            'script_wrapper = dist1:main',
+            'dist1_wrapper = dist1:main',
             ],
         },
     )

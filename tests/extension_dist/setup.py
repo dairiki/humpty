@@ -21,10 +21,4 @@ setup(
     package_data={
         'extension_dist': ['*.dat'],
         },
-    entry_points={
-        'console_scripts': [
-            'get_answer_from_ext = extension_dist:main',
-            'read_answer_from_data = extension_dist:answer_from_resource',
-            ],
-        },
     )
