@@ -231,9 +231,14 @@ class StubLoaders(object):
         self.egg_name = egg_name
 
     def __iter__(self):
-        stubs = self.namespace_stubs()
+        if sys.version_info < (3, 3):
+            stubs = self.namespace_stubs()
+        else:
+            stubs = ()          # PEP 420
+
         if self.egg_metadata.is_zip_safe:
             stubs = chain(stubs, self.extension_stub_loaders())
+
         for arcname, content in stubs:
             yield arcname, content
             yield self.byte_compile(arcname, content)

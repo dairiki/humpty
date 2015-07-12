@@ -3,9 +3,11 @@
 """
 from __future__ import absolute_import
 
+from contextlib import contextmanager
 import re
 from subprocess import call, check_call
 import sys
+from zipfile import ZipFile
 
 import pkginfo
 import py
@@ -70,6 +72,30 @@ def test_namespace_package(packages):
         'sys.exit(the_answer)\n'
         )
     assert venv.run(prog) == 42
+
+
+def test_namespace_stubs_in_egg(packages):
+    dist2_egg = packages.get_egg('dist2')
+    dist2_stubs = set(['dist2/__init__.py',
+                       'dist2/__init__.pyc',
+                       'dist2/plugins/__init__.py',
+                       'dist2/plugins/__init__.pyc'])
+    with fileobj(ZipFile(str(dist2_egg))) as zf:
+        files_in_egg = dist2_stubs.intersection(zf.namelist())
+
+    # Make sure we generated the stubs (or not, depending on python
+    # version)
+    stubs_in_egg = files_in_egg.intersection(dist2_stubs)
+    if sys.version_info >= (3, 3):
+        # PEP 420
+        assert len(stubs_in_egg) == 0
+    else:
+        assert stubs_in_egg == dist2_stubs
+
+    # Make sure we didn't copy the .pth file that the wheel installer
+    # creates for the namespaces
+    assert not any(fn.lower().endswith('.pth')
+                   for fn in files_in_egg)
 
 
 def test_extension(packages):
@@ -194,3 +220,11 @@ class Virtualenv(object):
 
     def check_run(self, prog, **kwargs):
         return self.check_call(['python', '-c', prog], **kwargs)
+
+
+@contextmanager
+def fileobj(fp):
+    try:
+        yield fp
+    finally:
+        fp.close()
