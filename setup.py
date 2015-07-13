@@ -15,6 +15,7 @@ requires = [
     'click',
     'distlib',
     'setuptools',
+    'six',
     ]
 
 tests_require = [

@@ -4,14 +4,18 @@
 from __future__ import absolute_import
 
 from contextlib import contextmanager
+import imp
+import posixpath
 import re
 from subprocess import call, check_call
 import sys
 from zipfile import ZipFile
 
+from click.testing import CliRunner
 import pkginfo
 import py
 import pytest
+from six import PY3
 
 
 @pytest.fixture(scope='session')
@@ -32,7 +36,7 @@ def packages(session_tmpdir):
 
 def test_pyfile_compiled(packages, tmpdir):
     packages.require_eggs('dist1')
-    venv = packages.get_venv('dist1')
+    venv = packages.get_venv('dist1', unzip=PY3)
     assert venv.run("__import__('dist1').test_is_compiled()") == 0
 
 
@@ -46,9 +50,9 @@ def test_summary(dist1_metadata):
     assert dist1_metadata.summary == "A dummy distribution"
 
 
-@pytest.mark.xfail
 def test_description(dist1_metadata):
-    assert dist1_metadata.description == "Long description"
+    assert dist1_metadata.description.rstrip() \
+        == u"Long description.\n\nGruß."
 
 
 def test_script_wrapper(packages):
@@ -76,21 +80,15 @@ def test_namespace_package(packages):
 
 def test_namespace_stubs_in_egg(packages):
     dist2_egg = packages.get_egg('dist2')
-    dist2_stubs = set(['dist2/__init__.py',
-                       'dist2/__init__.pyc',
-                       'dist2/plugins/__init__.py',
-                       'dist2/plugins/__init__.pyc'])
+    dist2_stubs = with_byte_compiled(['dist2/__init__.py',
+                                      'dist2/plugins/__init__.py'])
     with fileobj(ZipFile(str(dist2_egg))) as zf:
         files_in_egg = dist2_stubs.intersection(zf.namelist())
 
     # Make sure we generated the stubs (or not, depending on python
     # version)
     stubs_in_egg = files_in_egg.intersection(dist2_stubs)
-    if sys.version_info >= (3, 3):
-        # PEP 420
-        assert len(stubs_in_egg) == 0
-    else:
-        assert stubs_in_egg == dist2_stubs
+    assert stubs_in_egg == dist2_stubs
 
     # Make sure we didn't copy the .pth file that the wheel installer
     # creates for the namespaces
@@ -151,13 +149,16 @@ class PackageManager(object):
         for dist in dists:
             self.get_egg(dist)
 
-    def get_venv(self, *dists):
+    def get_venv(self, *dists, **kwargs):
         dists = frozenset(dists)
+        unzip = kwargs.get('unzip', False)
         venv = self.venvs.get(dists)
         if venv is None:
             name = '-'.join(sorted(re.sub(r'\W', '_', dist) for dist in dists))
+            if unzip:
+                name += '-unzipped'
             vdir = self.tmpdir.join("venv_%s" % name)
-            venv = Virtualenv(vdir, self.distdir, install=dists)
+            venv = Virtualenv(vdir, self.distdir, install=dists, unzip=unzip)
             self.venvs[dists] = venv
         return venv
 
@@ -186,14 +187,27 @@ def build_wheel(dist_name, wheelhouse, tmpdir):
 
 
 def build_egg(wheel, egg_dir):
-    from humpty import EggWriter
+    from humpty import main
+
+    name_ver = '-'.join(wheel.basename.split('-')[:2])
+    match = lambda p: p.fnmatch("%s-*" % name_ver)
+    existing_eggs = set()
+    if egg_dir.exists():
+        existing_eggs.update(egg_dir.listdir(fil=match))
+
     print("==== Building egg from %s ====" % wheel)
-    egg = EggWriter(str(wheel)).build_egg(str(egg_dir))
-    return py.path.local(egg)
+    runner = CliRunner()
+    result = runner.invoke(main, ['-d', str(egg_dir), str(wheel)])
+    assert result.exit_code == 0
+
+    new_eggs = set(egg_dir.listdir(fil=match)).difference(existing_eggs)
+    egg = new_eggs.pop()
+    assert len(new_eggs) == 0
+    return egg
 
 
 class Virtualenv(object):
-    def __init__(self, path, find_links=None, install=None):
+    def __init__(self, path, find_links=None, install=None, unzip=False):
         self.path = py.path.local(path)
         self.environ = {'PATH': str(self.path.join('bin'))}
         print("==== Creating virtualenv at %s ====" % path)
@@ -204,8 +218,15 @@ class Virtualenv(object):
             cmd = ['easy_install', '--index-url', 'file:///dev/null']
             if find_links:
                 cmd.extend(['--find-links', str(find_links)])
+            if unzip or True:
+                cmd.append('--always-unzip')
             cmd.extend(install)
             self.check_call(cmd)
+
+        # Make virtualenv read-only
+        for p in path.visit(fil="*.egg"):
+            if p.isdir():
+                p.chmod(0o500)
 
     def call(self, cmd, **kwargs):
         kwargs['env'] = self.environ
@@ -228,3 +249,19 @@ def fileobj(fp):
         yield fp
     finally:
         fp.close()
+
+
+def with_byte_compiled(paths):
+    """ Augment PATHS with paths of byte-compiled files.
+    """
+    get_tag = getattr(imp, 'get_tag', None)
+    compiled = set()
+    for path in paths:
+        head, tail = posixpath.split(path)
+        root, ext = posixpath.splitext(tail)
+        if ext == '.py':
+            if get_tag:
+                root = '%s.%s' % (root, get_tag())
+                head = posixpath.join(head, '__pycache__')
+            compiled.add(posixpath.join(head, root + '.pyc'))
+    return compiled.union(paths)

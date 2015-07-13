@@ -4,7 +4,7 @@ setup(
     name='dist1',
     version='0.1',
     description="A dummy distribution",
-    long_description="Long description.",
+    long_description=u"Long description.\n\nGruß.\n",
     classifiers=[
         "Topic :: Software Development :: Testing",
         ],

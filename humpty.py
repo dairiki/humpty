@@ -5,8 +5,8 @@
 """
 from __future__ import absolute_import
 
-from contextlib import contextmanager
-from io import StringIO
+import email
+import imp
 from itertools import chain
 import logging
 import os
@@ -20,21 +20,50 @@ from zipfile import ZipFile, ZIP_DEFLATED
 
 import click
 from distlib.markers import interpret
-from distlib.metadata import LegacyMetadata
 import distlib.scripts
 from distlib.util import get_export_entry
 from distlib.wheel import Wheel
 import pkg_resources
+from six import binary_type, PY3
 
 log = logging.getLogger(__name__)
 
-
-@contextmanager
-def fh(fp):
+try:
+    from importlib.util import cache_from_source
+except ImportError:             # python < 3.4
     try:
-        yield fp
-    finally:
-        fp.close()
+        from imp import cache_from_source
+    except ImportError:         # python < 3.2
+        def cache_from_source(path):
+            root, ext = os.path.splitext(path)
+            return root + '.pyc'
+
+try:
+    import sysconfig
+except ImportError:            # pragma: NO COVER
+    # python < 2.7
+    # FIXME: incorrect on non-posix systems
+    EXT_SUFFIX = '.so'
+else:
+    EXT_SUFFIX = (sysconfig.get_config_var('EXT_SUFFIX')
+                  or sysconfig.get_config_var('SO'))
+
+
+class file_cm(object):
+    """ Add context manager methods to dumb file-like instances.
+
+    """
+    def __init__(self, fp):
+        self._fp = fp
+
+    def __enter__(self):
+        return self._fp
+
+    def __exit__(self, typ, inst, tb):
+        self._fp.close()
+
+    def __getattr__(self, name):
+        return getattr(self._fp, name)
 
 
 def unsplit_sections(sections):
@@ -49,154 +78,322 @@ def unsplit_sections(sections):
 
 
 def join_lines(lines):
-    return '\n'.join(list(lines) + [''])
+    return '\n'.join(list(lines) + ['']).encode('utf-8')
 
 
-class EggMetadata(object):
-    """ Compute egg metadata.
+def bytes_(s, encoding='latin1', errors='strict'):
+    if not isinstance(s, binary_type):
+        s = s.encode(encoding, errors)
+    return s
+
+
+class EggInfoBase(object):
+    """ Egg metadata.
 
     An instance of this class is an iterable of ``filename, content``
     pairs, where each pair represents a metadata file which should be
     written to the packages ``EGG-INFO`` directory.
 
     """
-    def __init__(self, wheel):
-        self.wheel = wheel
-        self.metadata = wheel.metadata
+    def __init__(self, wheel_metadata, installed_files, metadata_files,
+                 zip_safe=False):
+        self.wheel_metadata = wheel_metadata
+        self.installed_files = installed_files
+        self.metadata_files = metadata_files
+        self.zip_safe = zip_safe
 
-    def __iter__(self):
+    def files(self):
         # XXX: dependency_links.txt?
-        # XXX: Copy any other *.txt?
 
-        yield 'PKG-INFO', self.pkg_info()
+        yield 'PKG-INFO', join_lines(self.pkg_info)
 
-        for name in ('requires', 'top_level', 'entry_points',
-                     'namespace_packages', 'native_libs', 'eager_resources'):
-            content = getattr(self, name)()
-            if content:
-                yield "%s.txt" % name, content
+        for name in ('requires', 'entry_points'):
+            sections = getattr(self, name)
+            if sections:
+                yield "%s.txt" % name, unsplit_sections(sections)
 
-        if self.is_zip_safe:
-            yield 'zip-safe', ''
+        for name in ('top_level', 'namespace_packages',
+                     'native_libs', 'eager_resources'):
+            lines = getattr(self, name)
+            if lines:
+                yield "%s.txt" % name, join_lines(lines)
+
+        if self.zip_safe:
+            yield 'zip-safe', b''
         else:
-            yield 'not-zip-safe', ''
+            yield 'not-zip-safe', b''
+
+    __iter__ = files
 
     @property
-    def is_zip_safe(self):
-        # FIXME: I'm not at all sure this is correct.
-        # There should probably be a command-line argument to override
-        # the auto detection of zip-safeness.
-
-        # XXX: py3k seems not to be able to load .pyc from zipped eggs
-        if sys.version_info >= (3,):
-            return False
-        return self.wheel.is_mountable()
-
     def pkg_info(self):
-        # FIXME: Which Metadata version?
-        # FIXME: Description is missing
-        fp = StringIO()
-        egg_md = LegacyMetadata(mapping=self.metadata.todict())
-        egg_md.check(strict=True)
-        egg_md.write_file(fp, skip_unknown=True)
-        return fp.getvalue()
+        index_data = self._get_index_data()
 
-    def entry_points(self):
-        # FIXME: maybe depend on wheel (or metadata) version to determine
-        # which method to use to get data
-        txt = self.read_metadata('entry_points.txt')
-        if txt is None:
-            txt = unsplit_sections(
-                (section, list(map("{0[0]} = {0[1]}".format, entries.items())))
-                for section, entries in self.metadata.exports)
-        return txt
+        yield "Metadata-Version: 1.1"
 
-    def namespace_packages(self):
-        # FIXME: maybe depend on wheel (or metadata) version?
-        txt = self.read_metadata('namespace_packages.txt')
-        if txt is None:
-            txt = join_lines(self.metadata.namespaces)
-        return txt
+        for name in ("Name", "Version", "Summary", "Home-page",
+                     "Author", "Author-email", "License"):
+            key = name.lower().replace('-', '_')
+            yield "%s: %s" % (name, index_data.get(key, 'UNKNOWN'))
 
+        if 'download_url' in index_data:
+            yield "Download-URL: %s" % index_data['download_url']
+
+        description = index_data.get('description', 'UNKNOWN').split('\n')
+        yield "Description: %s" % description[0]
+        for continuation in description[1:]:
+            yield "        %s" % continuation
+
+        if 'keywords' in index_data:
+            yield "Keywords: %s" % ','.join(index_data['keywords'])
+
+        for platform in index_data.get('platform', ['UNKNOWN']):
+            yield "Platform: %s" % platform
+
+        if 'classifiers' in index_data:
+            for classifier in index_data['classifiers']:
+                yield "Classifier: %s" % classifier
+
+    def _get_index_data(self):
+        return self.wheel_metadata.todict()
+
+    @property
+    def entry_points(self):     # pragma: NO COVER
+        raise NotImplementedError()
+
+    @property
+    def namespace_packages(self):  # pragma: NO COVER
+        raise NotImplementedError()
+
+    @property
     def top_level(self):
-        # FIXME: maybe depend on wheel (or metadata) version?
-        txt = self.read_metadata('top_level.txt')
-        assert txt is not None, "not sure what to do"
-        # Maybe extract top-level packages from metadata.modules?
-        return txt
+        top_level = set()
+        for path in self.installed_files:
+            lpath = path.lower()
+            for suffix in ('.py', EXT_SUFFIX):
+                if lpath.endswith(suffix):
+                    root = path[:-len(suffix)]
+                    break
+            else:
+                continue
+            top, sep, tail = root.partition('/')
+            top_level.add(top)
+        return sorted(top_level)
 
+    @property
     def native_libs(self):
-        # FIXME: maybe depend on wheel (or metadata) version?
-        txt = self.read_metadata('native_libs.txt')
-        if txt is None:
-            native_libs = []
-            with self.open_wheel() as zf:
-                for arcname in zf.namelist():
-                    base, ext = posixpath.splitext(arcname)
-                    if ext.lower() in ('.so', '.dll', '.dylib'):
-                        native_libs.append(arcname)
-            txt = join_lines(native_libs)
-        return txt
+        # wheel (at least as of 0.24.0) does not generate a native_libs.txt
+        def is_ext_mod(fn):
+            root, ext = posixpath.splitext(fn)
+            return ext.lower() in ('.so', '.dll', '.dylib')
+        return sorted(set(filter(is_ext_mod, self.installed_files)))
 
+    def eager_resources(self):  # pragma: NO COVER
+        raise NotImplementedError()
+
+    def requires(self):         # pragma: NO COVER
+        raise NotImplementedError()
+
+
+class EggInfo_Legacy(EggInfoBase):
+    """Compute egg metadata from PEP427 Wheel 1.0 metadata.
+
+    This is for ``.whl`` produced by the current version (0.24.0) of
+    ``wheel``\s ``bdist_wheel`` setup command.  It uses the
+    ``METADATA`` which purports to be of metadata version 2.0, but is
+    in the RFC822 format, rather than JSON as specified by :pep:`426`.
+
+    """
+    def _get_index_data(self):
+        index_data = super(EggInfo_Legacy, self)._get_index_data()
+        if 'description' not in index_data:
+            # distlib (as of 0.2.1) does not manage to parse the
+            # description from the METADATA files written by wheel's
+            # bdist_wheel.
+            index_data['description'] = self._get_description()
+        return index_data
+
+    def _get_description(self):
+        log.debug("Reading description from METADATA")
+        metadata = self.metadata_files['METADATA']
+        # NB: Under py3k, message_from_file seems to want a str, but
+        # with bytes in it (not characters.)
+        if PY3:                 # pragma: NO COVER
+            metadata = metadata.decode('latin1')
+        msg = email.message_from_string(metadata)
+        body = msg.get_payload(decode=True)
+        return bytes_(body).decode('utf-8')
+
+    @property
+    def entry_points(self):
+        sections = pkg_resources.split_sections(
+            self._read_metadata('entry_points.txt'))
+        return [(section, lines) for section, lines in sections if lines]
+
+    @property
+    def namespace_packages(self):
+        return list(self._read_metadata('namespace_packages.txt'))
+
+    @property
+    def top_level(self):
+        # FIXME: maybe depend on wheel version?
+        if self._metadata_exists('top_level.txt'):
+            return list(self._read_metadata('top_level.txt'))
+        else:
+            # wheel < 0.10 does not write a top_level.txt
+            return super(EggInfo_Legacy, self).top_level
+
+    @property
     def eager_resources(self):
-        # FIXME: maybe depend on wheel (or metadata) version?
-        txt = self.read_metadata('eager_resources.txt')
-        if txt is None:
-            # FIXME: not sure what to do.
-            pass
-        return txt
+        return list(self._read_metadata('eager_resources.txt'))
 
+    @property
     def requires(self):
-        run_requires = self.metadata.run_requires
+        run_requires = self.wheel_metadata.run_requires
 
-        def filter_reqs(extra, req):
-            if isinstance(req, dict):
+        def get_reqs(extra=None):
+            for req in run_requires:
+                req_, sep, marker = req.rpartition(';')
+                if not sep:
+                    yield req
+                elif interpret(marker, {'extra': extra}):
+                    yield req_.rstrip()
+
+        requires = []
+        reqs = list(get_reqs())
+        if reqs:
+            requires.append((None, reqs))
+
+        unconditional = set(reqs)
+        is_conditional = lambda req: req not in unconditional
+
+        for extra in self.wheel_metadata.extras:
+            reqs = list(filter(is_conditional, get_reqs(extra)))
+            if reqs:
+                requires.append((extra, reqs))
+        return requires
+
+    def _read_metadata(self, name):
+        """ Read a .txt format metadata file from .whl file.
+        """
+        content = self.metadata_files.get(name, b'')
+        content = content.decode('utf-8')
+        return pkg_resources.yield_lines(content)
+
+    def _metadata_exists(self, name):
+        return name in self.metadata_files
+
+
+class EggInfo(EggInfoBase):
+    """ Compute egg metadata from PEP491 Wheel 1.1? metadata.
+
+    This uses the JSON metadata version 2.0 as specified in :pep:`426`.
+
+    **NB**: Currently, I know of know packages which produce wheels of
+    this type, so this code is untested.
+
+    """
+    @property
+    def entry_points(self):
+        return [
+            (section, ["%s = %s" % item for item in entries.items()])
+            for section, entries in self.wheel_metadata.exports.items()
+            ]
+
+    @property
+    def namespace_packages(self):
+        return self.wheel_metadata.namespaces
+
+    @property
+    def eager_resources(self):
+        # FIXME: not sure what to do.
+        return []
+
+    @property
+    def requires(self):
+        requires = []
+        for extra in chain([None], self.wheel_metadata.extras):
+            reqs = []
+            for req in self.wheel_metadata.run_requires:
                 if req.get('extra') == extra:
                     marker = req.get('environment')
                     if not marker or interpret(marker):
-                        return req['requires']
+                        reqs.extend(req['requires'])
+            if reqs:
+                requires.append((extra, reqs))
+        return requires
+
+
+def list_installed_files(wheel):
+    wheel_file = os.path.join(wheel.dirname, wheel.filename)
+    info_pfx = "{0.name}-{0.version}.dist-info/".format(wheel)
+    data_pfx = "{0.name}-{0.version}.data/".format(wheel)
+    purelib_pfx = "{0.name}-{0.version}.data/purelib/".format(wheel)
+    platlib_pfx = "{0.name}-{0.version}.data/platlib/".format(wheel)
+
+    installed = set()
+    with file_cm(ZipFile(wheel_file, 'r')) as zf:
+        for path in zf.namelist():
+            if path.endswith('/'):
+                # directory
+                continue        # pragma: NO COVER
+            elif path.startswith(info_pfx):
+                continue
+            elif path.startswith(purelib_pfx):
+                installed_path = path[len(purelib_pfx):]
+            elif path.startswith(platlib_pfx):
+                installed_path = path[len(platlib_pfx):]
+            elif path.startswith(data_pfx):
+                continue
             else:
-                req_, sep, marker = req.rpartition(';')
-                if not sep:
-                    return [req]
-                elif interpret(marker, {'extra': extra}):
-                    return [req_]
-            return []
+                installed_path = path
+            installed.add(installed_path)
+    return installed
 
-        def reqs(extra=None):
-            return chain.from_iterable(filter_reqs(extra, req)
-                                       for req in run_requires)
 
-        requires = list(reqs())
-        unconditional = set(requires)
-        sections = [(None, requires)]
+def read_metadata_files(wheel):
+    wheel_file = os.path.join(wheel.dirname, wheel.filename)
+    info_pfx = "{0.name}-{0.version}.dist-info/".format(wheel)
 
-        for extra in self.metadata.extras:
-            sections.append((extra, [req for req in reqs(extra)
-                                     if req not in unconditional]))
-        txt = unsplit_sections(sections)
-        return txt
+    metadata_files = {}
+    with file_cm(ZipFile(wheel_file, 'r')) as zf:
+        for path in zf.namelist():
+            if path.startswith(info_pfx) and not path.endswith('/'):
+                with file_cm(zf.open(path)) as fp:
+                    name = path[len(info_pfx):]
+                    metadata_files[name] = fp.read()
+    return metadata_files
 
-    def read_metadata(self, name):
-        metadata_path = posixpath.join(
-            "%s-%s.dist-info" % (self.wheel.name, self.wheel.version),
-            name)
-        with self.open_wheel() as zf:
-            try:
-                with fh(zf.open(metadata_path)) as fp:
-                    return fp.read().decode('utf-8')
-            except KeyError:
-                return None
 
-    @contextmanager
-    def open_wheel(self):
-        wheel = self.wheel
-        wheel_file = os.path.join(wheel.dirname, wheel.filename)
-        zf = ZipFile(wheel_file, 'r')
-        try:
-            yield zf
-        finally:
-            zf.close()
+def is_zip_safe(wheel):
+    # XXX: Py3k seems not to be able to load .pyc from zipped eggs.
+    # More specifically, it will load .pyc files which are placed next
+    # to their .py files (old-style), however compiled byte-code in
+    # :pep:`3147` style *repository directories* (__pycache__) seem
+    # not be loaded from a zip file.  OTOH, zipped eggs generated by
+    # setuptools bdist_egg command suffer the same issue.  Punt for
+    # now...
+
+    # FIXME: currently distlib's WHEEL.is_mountable always
+    # returns true
+    return wheel.is_mountable()
+
+
+def get_wheel_version(wheel):
+    return tuple(map(int, wheel.info['Wheel-Version'].split('.')))
+
+
+def egg_metadata(wheel, egg_metadata_class=None):
+    if get_wheel_version(wheel) < (1, 1):
+        egg_metadata_class = EggInfo_Legacy
+    else:
+        egg_metadata_class = EggInfo
+
+    return egg_metadata_class(
+        wheel.metadata,
+        installed_files=list_installed_files(wheel),
+        metadata_files=read_metadata_files(wheel),
+        zip_safe=is_zip_safe(wheel))
 
 
 class StubLoaders(object):
@@ -226,17 +423,16 @@ class StubLoaders(object):
         __bootstrap__()
         """).lstrip()
 
-    def __init__(self, egg_metadata, egg_name=''):
-        self.egg_metadata = egg_metadata
+    def __init__(self, egg_info, egg_name=''):
+        self.egg_info = egg_info
         self.egg_name = egg_name
 
     def __iter__(self):
-        if sys.version_info < (3, 3):
-            stubs = self.namespace_stubs()
-        else:
-            stubs = ()          # PEP 420
-
-        if self.egg_metadata.is_zip_safe:
+        # XXX: don't need namespace stubs for py3k, if egg is unpacked,
+        # however they are still necessary if running from zipped egg.
+        # For now, always include them.
+        stubs = self.namespace_stubs()
+        if self.egg_info.zip_safe:
             stubs = chain(stubs, self.extension_stub_loaders())
 
         for arcname, content in stubs:
@@ -247,8 +443,7 @@ class StubLoaders(object):
         """ Create __init__.py for namespace packages
         """
         content = self.NAMESPACE_STUB.encode('utf-8')
-        namespace_packages = self.egg_metadata.namespace_packages()
-        for package in pkg_resources.yield_lines(namespace_packages):
+        for package in self.egg_info.namespace_packages:
             parts = package.split('.') + ['__init__.py']
             arcname = posixpath.join(*parts)
             yield arcname, content
@@ -259,18 +454,19 @@ class StubLoaders(object):
         Only needed (I think) if zip_safe is set.
 
         """
-        native_libs = self.egg_metadata.native_libs()
-        for extmod in pkg_resources.yield_lines(native_libs):
-            head, extname = posixpath.split(extmod)
-            root, ext = posixpath.splitext(extmod)
-            stubname = root + '.py'
-            stub_loader = self.EXT_STUB_TEMPLATE.format(extname=extname)
-            content = stub_loader.encode('utf-8')
-            yield stubname, content
+        for extmod in self.egg_info.native_libs:
+            if extmod.endswith(EXT_SUFFIX):
+                head, extname = posixpath.split(extmod)
+                stubname = extmod[:-len(EXT_SUFFIX)] + '.py'
+                stub_loader = self.EXT_STUB_TEMPLATE.format(extname=extname)
+                content = stub_loader.encode('utf-8')
+                yield stubname, content
 
     def byte_compile(self, arcname, content):
-        root, ext = posixpath.splitext(arcname)
-        arcname_pyc = root + '.pyc'
+        py_path = os.path.join(*arcname.split('/'))
+        pyc_path = cache_from_source(py_path)
+        arcname_pyc = '/'.join(pyc_path.split(os.path.sep))
+
         diagnostic_name = posixpath.join(self.egg_name, arcname)
         with tempfile.NamedTemporaryFile() as dst:
             with tempfile.NamedTemporaryFile() as src:
@@ -291,14 +487,14 @@ class EggWriter(object):
     def build_egg(self, destdir):
         wheel = self.wheel
         outfile = os.path.join(destdir, self.egg_name)
-        egg_metadata = EggMetadata(wheel)
+        egg_info = egg_metadata(wheel)
         log.warning("Converting %s to %s", wheel.filename, outfile)
 
         if not os.path.isdir(destdir):
             log.info("Creating dist directory %s", destdir)
             os.makedirs(destdir)
 
-        with fh(ZipFile(outfile, 'w', ZIP_DEFLATED)) as zf:
+        with file_cm(ZipFile(outfile, 'w', ZIP_DEFLATED)) as zf:
             builddir = tempfile.mkdtemp()
             try:
                 for arcname, filename in self.unpack_wheel(builddir):
@@ -306,11 +502,11 @@ class EggWriter(object):
             finally:
                 shutil.rmtree(builddir)
 
-            stub_loaders = StubLoaders(egg_metadata, self.egg_name)
+            stub_loaders = StubLoaders(egg_info, self.egg_name)
             for arcname, content in stub_loaders:
                 zf.writestr(arcname, content)
 
-            for filename, content in egg_metadata:
+            for filename, content in egg_info:
                 arcname = 'EGG-INFO/%s' % filename
                 zf.writestr(arcname, content)
 
