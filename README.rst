@@ -2,7 +2,9 @@
 Humpty - Convert Python wheels to eggs
 ======================================
 
-For when you have a ``.whl`` but need an ``.egg``.
+|version| |build status|
+
+For when you need an ``.egg`` but all you have is a ``.whl``.
 
 ***********
 Description
@@ -71,3 +73,12 @@ Authors
 `Jeff Dairiki`_
 
 .. _Jeff Dairiki: mailto:dairiki@dairiki.org
+
+.. |version| image::
+    https://img.shields.io/pypi/v/humpty.svg
+    :target: https://pypi.python.org/pypi/humpty/
+    :alt: Latest Version
+
+.. |build status| image::
+    https://travis-ci.org/dairiki/humpty?branch=master
+    :target: https://travis-ci.org/dairiki/humpty
