@@ -23,20 +23,24 @@ def session_tmpdir(request):
     tmpdir_handler = getattr(request.config, '_tmpdirhandler', None)
     if tmpdir_handler:
         # Create session tmpdir within pytest's session tmpdir
-        # Include '.' in name to avoid name clashes with the stock tmpdir.
-        return tmpdir_handler.mktemp('session.dir', numbered=False)
+        return tmpdir_handler.mktemp('session', numbered=False)
     else:                       # pragma: NO COVER
         return py.path.local.make_numbered_dir('humpty-')
 
 
 @pytest.fixture(scope='session')
-def packages(session_tmpdir):
-    return PackageManager(session_tmpdir)
+def packages(session_tmpdir, request):
+    return PackageManager(session_tmpdir, request)
 
 
 def test_pyfile_compiled(packages, tmpdir):
     packages.require_eggs('dist1')
-    venv = packages.get_venv('dist1', unzip=PY3)
+    unzip = False
+    if PY3:
+        # Python >= 3.2 doesn't seem to run .pyc files from PEP 3147
+        # (__pycache__) repository directories.
+        unzip = True
+    venv = packages.get_venv('dist1', unzip=unzip)
     assert venv.run("__import__('dist1').test_is_compiled()") == 0
 
 
@@ -120,14 +124,38 @@ def test_no_extras(packages):
     assert venv.run("__import__('dist1').test_no_extras()") == 0
 
 
+def test_main(packages, tmpdir):
+    from humpty import main
+
+    wheel = packages.get_wheel('dist1')
+
+    runner = CliRunner()
+    result = runner.invoke(main, ['-d', str(tmpdir), str(wheel)])
+    assert result.exit_code == 0
+
+    eggs = list(tmpdir.listdir(fil="*.egg"))
+    assert len(eggs) == 1
+    egg = eggs[0]
+    assert egg.isfile()
+    assert egg.fnmatch("dist1-*")
+
+
 class PackageManager(object):
-    def __init__(self, tmpdir):
+    def __init__(self, tmpdir, request):
         self.tmpdir = tmpdir
         self.wheelhouse = tmpdir.join('wheelhouse')
         self.distdir = tmpdir.join('dist')
         self.wheels = {}
         self.eggs = {}
         self.venvs = {}
+        self.saved_modes = []
+        # restore modes so that pytest can delete the tmpdir
+        request.addfinalizer(self._restore_modes)
+
+    def _restore_modes(self):
+        while self.saved_modes:
+            path, mode = self.saved_modes.pop()
+            path.chmod(mode)
 
     def get_wheel(self, dist_name):
         wheel = self.wheels.get(dist_name)
@@ -160,6 +188,13 @@ class PackageManager(object):
             vdir = self.tmpdir.join("venv_%s" % name)
             venv = Virtualenv(vdir, self.distdir, install=dists, unzip=unzip)
             self.venvs[dists] = venv
+
+            # Make installed eggs read-only
+            for p in vdir.visit(fil="*.egg"):
+                if p.isdir():
+                    self.saved_modes.append((p, p.stat().mode))
+                    p.chmod(0o500)
+
         return venv
 
 
@@ -187,23 +222,11 @@ def build_wheel(dist_name, wheelhouse, tmpdir):
 
 
 def build_egg(wheel, egg_dir):
-    from humpty import main
-
-    name_ver = '-'.join(wheel.basename.split('-')[:2])
-    match = lambda p: p.fnmatch("%s-*" % name_ver)
-    existing_eggs = set()
-    if egg_dir.exists():
-        existing_eggs.update(egg_dir.listdir(fil=match))
+    from humpty import EggWriter
 
     print("==== Building egg from %s ====" % wheel)
-    runner = CliRunner()
-    result = runner.invoke(main, ['-d', str(egg_dir), str(wheel)])
-    assert result.exit_code == 0
-
-    new_eggs = set(egg_dir.listdir(fil=match)).difference(existing_eggs)
-    egg = new_eggs.pop()
-    assert len(new_eggs) == 0
-    return egg
+    egg = EggWriter(str(wheel)).build_egg(str(egg_dir))
+    return py.path.local(egg)
 
 
 class Virtualenv(object):
@@ -218,15 +241,10 @@ class Virtualenv(object):
             cmd = ['easy_install', '--index-url', 'file:///dev/null']
             if find_links:
                 cmd.extend(['--find-links', str(find_links)])
-            if unzip or True:
+            if unzip:
                 cmd.append('--always-unzip')
             cmd.extend(install)
             self.check_call(cmd)
-
-        # Make virtualenv read-only
-        for p in path.visit(fil="*.egg"):
-            if p.isdir():
-                p.chmod(0o500)
 
     def call(self, cmd, **kwargs):
         kwargs['env'] = self.environ
