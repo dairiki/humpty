@@ -474,3 +474,48 @@ class TestStubLoaders(object):
         egg_info.native_libs = ['ext' + EXT_SUFFIX]
         loaders = dict(stub_loaders.extension_stub_loaders())
         assert set(loaders) == set(['ext.py'])
+
+
+def test_warner(caplog):
+    # coverage
+    from humpty import warner
+    warner((1, 2), (1, 0))
+    assert "Wheel version mismatch" in caplog.text()
+
+
+class TestScriptCopyer(object):
+    @pytest.fixture
+    def srcdir(self, tmpdir):
+        return tmpdir.join('src').ensure(dir=True)
+
+    @pytest.fixture
+    def dstdir(self, tmpdir):
+        return tmpdir.join('dst').ensure(dir=True)
+
+    @pytest.fixture
+    def copyer(self, srcdir, dstdir):
+        from humpty import ScriptCopyer
+        return ScriptCopyer(str(srcdir), str(dstdir))
+
+    def test_copies_script(self, copyer, srcdir, dstdir):
+        srcdir.join('tester').write(
+            "#!python\n"
+            "print('Hello')\n"
+            )
+        dstpath = dstdir.join('tester')
+
+        scripts = copyer.make('tester')
+
+        assert scripts == [str(dstpath)]
+        result = dstdir.join('tester').open().read()
+        # remove the blank line that distlib adds after the hashbang
+        result_lines = list(filter(None, result.splitlines()))
+        assert result_lines == [
+            "#!%s" % sys.executable,
+            "print('Hello')",
+            ]
+
+    def test_skips_wrapper(self, copyer, dstdir):
+        scripts = copyer.make('tester = foo:main')
+        assert scripts == []
+        assert len(dstdir.listdir()) == 0
