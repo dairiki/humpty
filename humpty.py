@@ -206,11 +206,23 @@ class EggInfo_Legacy(EggInfoBase):
     """
     def _get_index_data(self):
         index_data = super(EggInfo_Legacy, self)._get_index_data()
-        if 'description' not in index_data:
+        description = index_data.get('description')
+        if description is None:
             # distlib (as of 0.2.1) does not manage to parse the
             # description from the METADATA files written by wheel's
             # bdist_wheel.
-            index_data['description'] = self._get_description()
+            description = self._get_description()
+        else:
+            # Setuptools writes the description with continuation
+            # lines indented eight spaces.  Distlib expects
+            # continuation lines to be prefixed by seven spaces and a
+            # pipe (per PEP 345.)  As a result distlib does not seem
+            # to remove setuptools' eight space prefixes :-/
+            description = '\n'.join(
+                line[8:] if line.startswith(' ' * 8) else line
+                for line in description.strip().splitlines()
+                )
+        index_data['description'] = description
         return index_data
 
     def _get_description(self):
@@ -354,7 +366,6 @@ def list_installed_files(wheel):
 def read_metadata_files(wheel):
     wheel_file = os.path.join(wheel.dirname, wheel.filename)
     info_pfx = "{0.name}-{0.version}.dist-info/".format(wheel)
-
     metadata_files = {}
     with file_cm(ZipFile(wheel_file, 'r')) as zf:
         for path in zf.namelist():
@@ -479,7 +490,8 @@ class StubLoaders(object):
 class EggWriter(object):
     def __init__(self, wheel_file):
         wheel = Wheel(wheel_file)
-        assert wheel.is_compatible()
+        assert wheel.is_compatible(), \
+            "%s is not compatible with this platform" % wheel_file
         wheel.verify()
 
         self.wheel = wheel
