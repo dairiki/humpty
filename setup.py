@@ -5,7 +5,7 @@ import sys
 from setuptools import setup
 from setuptools.command.test import test as TestCommand
 
-VERSION = '0.1a1.dev0'
+VERSION = '0.1'
 
 here = os.path.abspath(os.path.dirname(__file__))
 README = open(os.path.join(here, 'README.rst')).read()
@@ -52,7 +52,7 @@ setup(
     description="A tool to convert python wheels to eggs",
     long_description=README + '\n\n' + CHANGES,
     classifiers=[
-        "Development Status :: 3 - Alpha",
+        "Development Status :: 4 - Beta",
         "Environment :: Console",
         "Intended Audience :: Developers",
         "Intended Audience :: System Administrators",

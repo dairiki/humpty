@@ -17,8 +17,10 @@ Currently, the tool is in a “works for me” state.  (It is not
 guaranteed to work for you.)
 
 Development takes place on github_.
+The package is installable from PyPI_
 
 .. _github: https://github.com/dairiki/humpty/
+.. _pypi: https://pypi.python.org/pypi/humpty/
 
 ********
 Synopsis
