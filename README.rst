@@ -80,5 +80,5 @@ Authors
     :alt: Latest Version
 
 .. |build status| image::
-    https://travis-ci.org/dairiki/humpty?branch=master
+    https://travis-ci.org/dairiki/humpty.svg?branch=master
     :target: https://travis-ci.org/dairiki/humpty
