@@ -268,7 +268,7 @@ class EggInfo_Legacy(EggInfoBase):
                 req_, sep, marker = req.rpartition(';')
                 if not sep:
                     yield req
-                elif interpret(marker, {'extra': extra}):
+                elif interpret(marker.lstrip(), {'extra': extra}):
                     yield req_.rstrip()
 
         requires = []
