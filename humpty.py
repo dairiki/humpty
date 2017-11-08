@@ -588,7 +588,8 @@ def warner(software_wheel_version, file_wheel_version):
 class ScriptCopyer(distlib.scripts.ScriptMaker):
     """ A ScriptMaker which does not create script wrappers.
 
-    It does copy the """
+    It does copy the scripts from the source.
+    """
     def make(self, specification, options=None):
         if get_export_entry(specification):
             log.debug("Not building script: %s", specification)

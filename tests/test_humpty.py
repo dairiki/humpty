@@ -508,8 +508,16 @@ class TestScriptCopyer(object):
 
         assert scripts == [str(dstpath)]
         result = dstdir.join('tester').open().read()
-        # remove the blank line that distlib adds after the hashbang
+
+        # Remove the blank line that some versions of distlib add
+        # after the hashbang
         result_lines = list(filter(None, result.splitlines()))
+
+        # Distlib==0.2.6 adds the new hashbang as the first line, but
+        # leaves the original in place in the second line.
+        if result_lines[1].startswith('#'):
+            result_lines.pop(1)
+
         assert result_lines == [
             "#!%s" % sys.executable,
             "print('Hello')",
