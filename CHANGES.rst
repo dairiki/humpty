@@ -8,6 +8,16 @@ Next Release
 Python 2.6 is no longer supported.  We now test under cpython 2.7
 and cpython 3.3 through 3.6.
 
+Changed Behavior
+----------------
+
+* The strict check for wheel binary compatibility with the current platform
+  has been removed.  Now a warning is printed in this case.
+  When running under py35 or py36, distlib sometimes falsely reports
+  that some wheels are not binary compatible. See distlib ticket `#93`__.
+
+__ https://bitbucket.org/pypa/distlib/issues/93
+
 Bugs Fixed
 ----------
 

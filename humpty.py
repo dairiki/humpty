@@ -527,8 +527,15 @@ class StubLoaders(object):
 class EggWriter(object):
     def __init__(self, wheel_file):
         wheel = Wheel(wheel_file)
-        assert wheel.is_compatible(), \
-            "%s is not compatible with this platform" % wheel_file
+
+        if not wheel.is_compatible():
+            # Workaround for https://bitbucket.org/pypa/distlib/issues/93
+            log.warning(        # pragma: NO COVER
+                "Distlib reports that %s is not compatible with this "
+                "platform.  (Note that on some versions of python, "
+                "distlibs detection of compatible ABIs is broken. "
+                "See distlib issue #93.)",
+                wheel_file)
         wheel.verify()
 
         self.wheel = wheel
