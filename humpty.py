@@ -5,6 +5,7 @@
 """
 from __future__ import absolute_import
 
+from collections import defaultdict
 import email
 import imp
 from itertools import chain
@@ -24,7 +25,7 @@ import distlib.scripts
 from distlib.util import get_export_entry
 from distlib.wheel import Wheel
 import pkg_resources
-from six import binary_type, PY3
+from six import binary_type, text_type, PY3
 
 log = logging.getLogger(__name__)
 
@@ -85,6 +86,57 @@ def bytes_(s, encoding='latin1', errors='strict'):
     if not isinstance(s, binary_type):
         s = s.encode(encoding, errors)
     return s
+
+
+def _get_requires_json(wheel_metadata):
+    """ Compute requirements, grouped by extra.
+
+    This expects wheel_metadata.run_requires to be in the JSON format
+    as described at
+    https://www.python.org/dev/peps/pep-0426/#dependencies
+
+    """
+    by_extra = defaultdict(set)
+    for req in wheel_metadata.run_requires:
+        extra = req.get('extra')
+        marker = req.get('environment')
+        if not marker or interpret(marker):
+            by_extra[extra].update(req['requires'])
+
+    for extra in sorted(by_extra.keys(),
+                        key=lambda extra: (extra is not None, extra)):
+        yield extra, sorted(by_extra[extra])
+
+
+def _get_requires_rfc822(wheel_metadata):
+    """ Compute requirements, grouped by extra.
+
+    This expects wheel_metadata.run_requires to be a list of strings,
+    as when metadata comes from legacy RFC822 formatted metadata.
+
+    """
+    run_requires = wheel_metadata.run_requires
+
+    def get_reqs(extra=None):
+        for req in run_requires:
+            assert isinstance(req, text_type)
+            req_, sep, marker = req.rpartition(';')
+            if not sep:
+                yield req
+            elif interpret(marker.lstrip(), {'extra': extra}):
+                yield req_.rstrip()
+
+    reqs = list(get_reqs())
+    if reqs:
+        yield None, reqs
+
+    unconditional = set(reqs)
+    is_conditional = lambda req: req not in unconditional
+
+    for extra in wheel_metadata.extras:
+        reqs = list(filter(is_conditional, get_reqs(extra)))
+        if reqs:
+            yield extra, reqs
 
 
 class EggInfoBase(object):
@@ -261,29 +313,22 @@ class EggInfo_Legacy(EggInfoBase):
 
     @property
     def requires(self):
-        run_requires = self.wheel_metadata.run_requires
+        wheel_metadata = self.wheel_metadata
+        is_legacy = wheel_metadata._legacy is not None
+        if is_legacy:
+            # With older versions of distlib, when reading wheels
+            # built with older versions of wheel,
+            # metadata.run_requires is a list of strings in the RFC822
+            # metadata style.
+            # (E.g. distlib==0.2.4, wheel==0.25.0)
+            get_requires = _get_requires_rfc822
+        else:
+            # With recent versions of distlib, or with wheels built
+            # by recent versions of wheel, run_requires is a list of dicts
+            # in the "JSON" format described by PEP-426.
+            get_requires = _get_requires_json
 
-        def get_reqs(extra=None):
-            for req in run_requires:
-                req_, sep, marker = req.rpartition(';')
-                if not sep:
-                    yield req
-                elif interpret(marker.lstrip(), {'extra': extra}):
-                    yield req_.rstrip()
-
-        requires = []
-        reqs = list(get_reqs())
-        if reqs:
-            requires.append((None, reqs))
-
-        unconditional = set(reqs)
-        is_conditional = lambda req: req not in unconditional
-
-        for extra in self.wheel_metadata.extras:
-            reqs = list(filter(is_conditional, get_reqs(extra)))
-            if reqs:
-                requires.append((extra, reqs))
-        return requires
+        return list(get_requires(wheel_metadata))
 
     def _read_metadata(self, name):
         """ Read a .txt format metadata file from .whl file.
@@ -323,17 +368,7 @@ class EggInfo(EggInfoBase):
 
     @property
     def requires(self):
-        requires = []
-        for extra in chain([None], self.wheel_metadata.extras):
-            reqs = []
-            for req in self.wheel_metadata.run_requires:
-                if req.get('extra') == extra:
-                    marker = req.get('environment')
-                    if not marker or interpret(marker):
-                        reqs.extend(req['requires'])
-            if reqs:
-                requires.append((extra, reqs))
-        return requires
+        return list(_get_requires_json(self.wheel_metadata))
 
 
 def list_installed_files(wheel):

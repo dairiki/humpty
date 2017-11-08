@@ -8,6 +8,15 @@ Next Release
 Bugs Fixed
 ----------
 
+* Fix ``EggInfo_Legacy.requires`` to work with recent versions of
+  ``distlib``.  With ``distlib<=0.2.4``,
+  ``distlib.wheel.Wheel.metadata.run_requires`` is a list of strings,
+  taken from lines of the RFC822 style metadata.  With recent versions
+  of ``distlib``, ``run_requires`` is a list of dicts in the "JSON"
+  format described in :pep:`426`.  This addresses `#1`__.
+
+__ https://github.com/dairiki/humpty/issues/1
+
 * Always create eggs with ``zip_safe=False``.  There currently seems
   to be no robust way to determine whether a package is zip_safe from
   its wheel. See `#3`__ for further discussion.

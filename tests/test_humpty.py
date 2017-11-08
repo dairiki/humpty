@@ -82,6 +82,8 @@ class DummyWheelMetadata(object):
     run_requires = []
     index_data = {}
 
+    _legacy = {}
+
     def __init__(self, **kwargs):
         self.__dict__.update(kwargs)
 
@@ -184,7 +186,7 @@ class TestEggInfo_Legacy(EggInfoTestBase):
         return EggInfo_Legacy(wheel_metadata, installed_files, metadata_files)
 
     def test_files_requires_txt(self, egg_info, wheel_metadata):
-        wheel_metadata.run_requires = ['req']
+        wheel_metadata.run_requires = [u'req']
         files = dict(egg_info.files())
         assert files['requires.txt'] == b'req\n'
 
@@ -239,13 +241,35 @@ class TestEggInfo_Legacy(EggInfoTestBase):
         metadata_files['eager_resources.txt'] = b'foo/data.txt\n'
         assert egg_info.eager_resources == ['foo/data.txt']
 
-    def test_requires(self, egg_info, wheel_metadata):
+    def test_requires_rfc822(self, egg_info, wheel_metadata):
         wheel_metadata.run_requires = [
-            "foo",
-            "bar ; extra == 'addon'",
-            'baz ; extra == "addon"',
+            u"foo",
+            u"bar ; extra == 'addon'",
+            u'baz ; extra == "addon"',
+            u"bozo ; extra == 'ignored' and sys_platform == 'goober'",
             ]
-        wheel_metadata.extras = ['addon']
+        wheel_metadata.extras = ['addon', 'ignored']
+        assert egg_info.requires == [
+            (None, ['foo']),
+            ('addon', ['bar', 'baz']),
+            ]
+
+    def test_requires_json(self, egg_info, wheel_metadata):
+        wheel_metadata._legacy = None
+        wheel_metadata.run_requires = [
+            {
+                'requires': ["foo"],
+                },
+            {
+                'requires': ["bar", "baz"],
+                'extra': 'addon',
+                },
+            {
+                'requires': ["bozo"],
+                'extra': 'ignored',
+                'environment': "sys_platform == 'goober'"
+                },
+            ]
         assert egg_info.requires == [
             (None, ['foo']),
             ('addon', ['bar', 'baz']),
