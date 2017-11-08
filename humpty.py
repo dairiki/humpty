@@ -387,6 +387,8 @@ def is_zip_safe(wheel):
 
     # FIXME: currently distlib's WHEEL.is_mountable always
     # returns true
+    #
+    # Note that currently this function is unused.
     return wheel.is_mountable()
 
 
@@ -404,7 +406,7 @@ def egg_metadata(wheel, egg_metadata_class=None):
         wheel.metadata,
         installed_files=list_installed_files(wheel),
         metadata_files=read_metadata_files(wheel),
-        zip_safe=is_zip_safe(wheel))
+        zip_safe=False)
 
 
 class StubLoaders(object):
