@@ -44,6 +44,7 @@ class PyTest(TestCommand):
         errno = pytest.main(self.pytest_args)
         sys.exit(errno)
 
+
 cmdclass = {'test': PyTest}
 
 setup(

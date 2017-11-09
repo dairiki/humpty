@@ -7,7 +7,6 @@ from __future__ import absolute_import
 
 from collections import defaultdict
 import email
-import imp
 from itertools import chain
 import logging
 import os
@@ -131,7 +130,9 @@ def _get_requires_rfc822(wheel_metadata):
         yield None, reqs
 
     unconditional = set(reqs)
-    is_conditional = lambda req: req not in unconditional
+
+    def is_conditional(req):
+        return req not in unconditional
 
     for extra in wheel_metadata.extras:
         reqs = list(filter(is_conditional, get_reqs(extra)))
