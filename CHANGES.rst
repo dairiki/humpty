@@ -2,6 +2,11 @@
 History
 *******
 
+Next Release
+============
+
+No changes yet.
+
 Release 0.2 (2017-11-08)
 ========================
 
