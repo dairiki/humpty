@@ -2,8 +2,8 @@
 History
 *******
 
-Next Release
-============
+Release 0.2 (2017-11-08)
+========================
 
 Python 2.6 is no longer supported.  We now test under cpython 2.7
 and cpython 3.3 through 3.6.
