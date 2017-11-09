@@ -480,7 +480,7 @@ def test_warner(caplog):
     # coverage
     from humpty import warner
     warner((1, 2), (1, 0))
-    assert "Wheel version mismatch" in caplog.text()
+    assert "Wheel version mismatch" in caplog.text
 
 
 class TestScriptCopyer(object):
