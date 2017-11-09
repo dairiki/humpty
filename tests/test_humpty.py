@@ -9,6 +9,7 @@ import posixpath
 import sys
 from zipfile import ZipFile
 
+from pkg_resources import parse_version, require
 import pytest
 from six import int2byte, unichr, StringIO
 
@@ -551,3 +552,28 @@ class TestScriptCopyer(object):
         scripts = copyer.make('tester = foo:main')
         assert scripts == []
         assert len(dstdir.listdir()) == 0
+
+
+# Wheel==0.23 is the first version which supports the --python-tag
+# argument to bdist_wheel.
+skip_if_python_tag_unsupported = pytest.mark.skipif(
+    require('wheel')[0].parsed_version < parse_version('0.23'),
+    reason="Installed version of wheel does not support --python-tag")
+
+
+class TestEggWriter(object):
+    def make_one(self, wheel_file):
+        from humpty import EggWriter
+        return EggWriter(str(wheel_file))
+
+    @skip_if_python_tag_unsupported
+    def test_warns_on_incompatibility(self, packages, caplog):
+        wheel_file = packages.get_wheel('dist1', python_tag='bogus12')
+        self.make_one(wheel_file)
+        assert len(caplog.records) == 1
+        assert 'not compatible' in caplog.records[0].getMessage()
+
+    def test_no_warning_if_compatible(self, packages, caplog):
+        wheel_file = packages.get_wheel('dist1')
+        self.make_one(wheel_file)
+        assert len(caplog.records) == 0
