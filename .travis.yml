@@ -18,6 +18,10 @@ matrix:
     - python: 3.6
       env: TOXENV=py36-distlib_0_2_4
     - python: 2.7
+      env: TOXENV=py27-wheel_0_18
+    - python: 3.4
+      env: TOXENV=py34-wheel_0_18
+    - python: 2.7
       env: TOXENV=cover
 install:
   - travis_retry pip install tox
