@@ -5,6 +5,11 @@ History
 Next Release
 ============
 
+Compatibility
+-------------
+
+- Drop support for python 3.3.
+
 Packaging
 ---------
 
