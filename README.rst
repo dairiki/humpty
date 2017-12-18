@@ -27,7 +27,7 @@ Obsolescence
 ************
 
 Note that recent developments may have made this utility unnecessary.
-As of ``setuptools`` 38.2.0, ``easy_install`` support installing
+As of ``setuptools`` 38.2.0, ``easy_install`` supports installing
 wheels as unzipped eggs. Also, ``zc.buildout``, as of 2.10.0 takes
 advantage of this to support installation from wheels.
 
