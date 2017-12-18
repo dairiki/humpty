@@ -2,8 +2,8 @@
 History
 *******
 
-Next Release
-============
+Release 0.2.1 (2017-12-18)
+==========================
 
 Compatibility
 -------------
@@ -14,6 +14,13 @@ Packaging
 ---------
 
 - Include tests in sdist.
+
+Testing
+-------
+
+- Test with wheel version 0.18 (among others.)
+
+- Increase test coverage
 
 
 Release 0.2 (2017-11-08)
