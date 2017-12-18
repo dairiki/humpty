@@ -5,7 +5,11 @@ History
 Next Release
 ============
 
-No changes yet.
+Packaging
+---------
+
+- Include tests in sdist.
+
 
 Release 0.2 (2017-11-08)
 ========================
