@@ -22,6 +22,15 @@ The package is installable from PyPI_
 .. _github: https://github.com/dairiki/humpty/
 .. _pypi: https://pypi.python.org/pypi/humpty/
 
+************
+Obsolescence
+************
+
+Note that recent developments may have made this utility unnecessary.
+As of ``setuptools`` 38.2.0, ``easy_install`` support installing
+wheels as unzipped eggs. Also, ``zc.buildout``, as of 2.10.0 takes
+advantage of this to support installation from wheels.
+
 ********
 Synopsis
 ********
